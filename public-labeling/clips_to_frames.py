@@ -18,12 +18,15 @@ clips are not touched again. Needs db/volunteer_schema.sql to have been run.
     ../.venv/bin/python clips_to_frames.py               # all unprocessed clips
     ../.venv/bin/python clips_to_frames.py --limit 2     # try a couple first
     ../.venv/bin/python clips_to_frames.py --fps 0.5     # fewer, less-repetitive frames
+    ../.venv/bin/python clips_to_frames.py --watch       # keep going: cut each new clip
+                                                         # as soon as the recorder uploads it
 """
 import argparse
 import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from dotenv import dotenv_values
@@ -102,6 +105,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--fps", type=float, default=float(os.getenv("FRAME_FPS", 1)))
     ap.add_argument("--limit", type=int, default=0, help="stop after N clips (0 = all)")
+    ap.add_argument("--watch", action="store_true",
+                    help="keep running and cut new clips as they finish uploading")
+    ap.add_argument("--interval", type=float, default=60, help="seconds between checks in --watch mode")
     args = ap.parse_args()
 
     src = client(CLIPS_ENV)  # where the clips live
@@ -110,11 +116,26 @@ def main():
     ensure_images_table(sb)
     ensure_frames_bucket(sb)
 
+    if not args.watch:
+        run_once(src, sb, args)
+        return
+    print(f"watching for new clips every {args.interval:.0f}s (Ctrl-C to stop)", flush=True)
+    while True:
+        try:
+            run_once(src, sb, args, quiet=True)
+        except Exception as e:  # noqa: BLE001 — a network blip shouldn't stop the watcher
+            print(f"check failed ({e}); retrying", flush=True)
+        time.sleep(args.interval)
+
+
+def run_once(src, sb, args, quiet=False):
     q = src.table("clips").select("*").eq("is_processed", False).order("created_at")
     if args.limit:
         q = q.limit(args.limit)
     clips = q.execute().data
-    print(f"{len(clips)} unprocessed clip(s), {args.fps} fps")
+    if quiet and not clips:
+        return
+    print(f"{time.strftime('%H:%M')} {len(clips)} unprocessed clip(s), {args.fps} fps", flush=True)
 
     total = 0
     for i, clip in enumerate(clips, 1):
@@ -124,10 +145,10 @@ def main():
             print(f"[{i}/{len(clips)}] {clip['filename']}: FAILED ({e})")
             continue
         total += n
-        print(f"[{i}/{len(clips)}] {clip['filename']}: {n} frames")
+        print(f"[{i}/{len(clips)}] {clip['filename']}: {n} frames", flush=True)
 
     count = sb.table("images").select("id", count="exact").eq("is_labeled", False).limit(1).execute().count
-    print(f"done: {total} new frames; {count} images waiting to be labeled")
+    print(f"done: {total} new frames; {count} images waiting to be labeled", flush=True)
 
 
 if __name__ == "__main__":
