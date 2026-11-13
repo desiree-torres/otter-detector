@@ -129,6 +129,10 @@ def start_ffmpeg(url):
         "-reconnect", "1",
         "-reconnect_streamed", "1",
         "-reconnect_delay_max", "5",
+        # Give up if the stream sends nothing for 30 s. Without this a stalled
+        # connection blocks the read forever and the recorder silently hangs;
+        # with it ffmpeg exits and the main loop re-resolves the stream.
+        "-rw_timeout", "30000000",  # microseconds
         "-i", url,
         "-f", "rawvideo",
         "-pix_fmt", "bgr24",
